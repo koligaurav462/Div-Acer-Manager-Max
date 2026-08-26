@@ -1,149 +1,306 @@
-name: Build and Publish Release
+name: DAMX Build and Publish
 
 on:
   workflow_dispatch:
     inputs:
-      release_name:
-        description: 'Release name'
-        required: false
       tag:
-        description: 'Tag (e.g., v1.0.0)'
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        type: string
+      release_name:
+        description: 'Release name (optional, defaults to tag)'
         required: false
-      prerelease:
-        description: 'Is this a prerelease?'
-        required: false
-        default: 'false'
+        type: string
+      is_prerelease:
+        description: 'Is this a pre-release?'
+        required: true
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish the release to GitHub?'
+        required: true
+        type: boolean
+        default: true
+      drivers_version:
+        description: 'Drivers version to use'
+        required: true
         type: choice
-        options: [ 'false', 'true' ]
+        default: 'div-linuwu-sense'
+        options:
+        - 'div-linuwu-sense'
+        - 'linuwu-sense'
       git_commit:
         description: 'Git commit SHA to reset to (optional)'
         required: false
-        default: ''
-      publish_release:
-        description: 'Publish GitHub Release?'
-        required: true
-        default: 'false'
-        type: choice
-        options: [ 'false', 'true' ]
-
+        type: string
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Optionally reset to specified commit
-        if: ${{ github.event.inputs.git_commit != '' }}
-        run: |
-          git reset --hard ${{ github.event.inputs.git_commit }}
-          git clean -fdx
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '9.0.x'
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install PyInstaller
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-
-      - name: Publish .NET GUI application
-        run: |
-          dotnet publish \
-            -c Release \
-            -f net9.0 \
-            -r linux-x64 \
-            --self-contained true \
-            /p:PublishSingleFile=true \
-            /p:IncludeNativeLibrariesForSelfExtract=true \
-            /p:IncludeAllContentForSelfExtract=true \
-            /p:DeleteExistingFiles=true \
-            -o ./publish
-
-      - name: Build DAMX-Daemon Python binary
-        run: |
-          pyinstaller --onefile --distpath ./DaemonPublish/ --clean DAMM-Daemon/DAMX-Daemon.py
-
-      - name: Prepare release folder structure
-        run: |
-          mkdir -p ./release/DAMX-GUI
-          mkdir -p ./release/DAMX-Daemon
-
-          # GUI: Copy main binary and icons
-          BIN=$(find ./publish -maxdepth 1 -type f -executable -name 'DivAcerManagerMax*' ! -name '*.pdb' | head -n1)
-          cp "$BIN" ./release/DAMX-GUI/
-          cp DivAcerManagerMax/icon.png ./release/DAMX-GUI/
-          cp DivAcerManagerMax/iconTransparent.png ./release/DAMX-GUI/
-
-          # Daemon: Copy only the pyinstaller binary
-          DAEMON_BIN=$(find ./DaemonPublish -maxdepth 1 -type f -executable -name 'DAMX-Daemon*' ! -name '*.py' | head -n1)
-          cp "$DAEMON_BIN" ./release/DAMX-Daemon/
-
-          # PDB: If present, copy for separate archive
-          if [ -f ./publish/DivAcerManagerMax.pdb ]; then
-            cp ./publish/DivAcerManagerMax.pdb ./release/
+    - name: Checkout main repository
+      uses: actions/checkout@v4
+      with:
+        path: Div-Acer-Manager-Max
+        fetch-depth: 0
+    
+    - name: Optionally reset to specified commit
+      if: ${{ inputs.git_commit != '' }}
+      run: |
+        cd Div-Acer-Manager-Max
+        git reset --hard ${{ inputs.git_commit }}
+        git clean -fdx
+    
+    - name: Download and Setup Drivers
+      run: |
+        echo "Setting up drivers: ${{ inputs.drivers_version }}"
+        
+        if [ "${{ inputs.drivers_version }}" == "linuwu-sense" ]; then
+          echo "Downloading original Linuwu-Sense drivers..."
+          git clone https://github.com/0x7375646F/Linuwu-Sense.git drivers-temp
+        else
+          echo "Downloading Div-Linuwu-Sense drivers..."
+          git clone https://github.com/PXDiv/Div-Linuwu-Sense.git drivers-temp
+        fi
+        
+        echo "✓ Drivers repository cloned successfully"
+        ls -la drivers-temp/
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    - name: Install PyInstaller
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+    
+    - name: Detect versions from source files
+      id: versions
+      run: |
+        # Detect GUI version
+        GUI_VERSION=$(grep -oP 'private const string ProjectVersion\s*=\s*"\K[\d.]+' Div-Acer-Manager-Max/DivAcerManagerMax/MainWindow.axaml.cs || echo "unknown")
+        echo "gui_version=$GUI_VERSION" >> $GITHUB_OUTPUT
+        
+        # Detect daemon version  
+        DAEMON_VERSION=$(grep -oP 'VERSION\s*=\s*"\K[\d.]+' Div-Acer-Manager-Max/DAMM-Daemon/DAMX-Daemon.py || echo "unknown")
+        echo "daemon_version=$DAEMON_VERSION" >> $GITHUB_OUTPUT
+        
+        # Detect drivers version based on selected drivers
+        DRIVERS_VERSION=$(grep -oP '#define\s+DRIVER_VERSION\s+"\K[\d.]+' drivers-temp/src/linuwu_sense.c || echo "unknown")
+        echo "drivers_version=$DRIVERS_VERSION" >> $GITHUB_OUTPUT
+        echo "drivers_type=${{ inputs.drivers_version }}" >> $GITHUB_OUTPUT
+        
+        echo "Detected versions:"
+        echo "  GUI: $GUI_VERSION"
+        echo "  Daemon: $DAEMON_VERSION" 
+        echo "  Drivers: $DRIVERS_VERSION (${{ inputs.drivers_version }})"
+    
+    - name: Build Python Daemon
+      run: |
+        cd Div-Acer-Manager-Max/DAMM-Daemon
+        
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        fi
+        
+        pyinstaller --onefile --clean DAMX-Daemon.py
+        
+        echo "✓ Daemon built successfully"
+        ls -la dist/
+    
+    - name: Build .NET GUI
+      run: |
+        cd Div-Acer-Manager-Max/DivAcerManagerMax
+        
+        dotnet publish \
+          -c Release \
+          -f net9.0 \
+          -r linux-x64 \
+          --self-contained true \
+          /p:PublishSingleFile=true \
+          /p:IncludeNativeLibrariesForSelfExtract=true \
+          /p:IncludeAllContentForSelfExtract=true \
+          /p:DeleteExistingFiles=true
+        
+        echo "✓ GUI built successfully"
+    
+    - name: Create Package Structure
+      run: |
+        PACKAGE_VERSION="${{ steps.versions.outputs.gui_version }}"
+        PACKAGE_DIR="DAMX-${PACKAGE_VERSION}"
+        
+        echo "Creating package directory: $PACKAGE_DIR"
+        mkdir -p "$PACKAGE_DIR"/{DAMX-Daemon,DAMX-GUI,Linuwu-Sense}
+        
+        echo "package_dir=$PACKAGE_DIR" >> $GITHUB_ENV
+        echo "package_version=$PACKAGE_VERSION" >> $GITHUB_ENV
+    
+    - name: Copy Daemon Executable
+      run: |
+        cp Div-Acer-Manager-Max/DAMM-Daemon/dist/DAMX-Daemon "${{ env.package_dir }}/DAMX-Daemon/"
+        chmod +x "${{ env.package_dir }}/DAMX-Daemon/DAMX-Daemon"
+        echo "✓ Daemon executable copied"
+    
+    - name: Copy GUI Executable, Icons, and PDB
+      run: |
+        PUBLISH_DIR="Div-Acer-Manager-Max/DivAcerManagerMax/bin/Release/net9.0/linux-x64/publish/"
+        
+        # Copy main executable
+        BIN=$(find $PUBLISH_DIR -maxdepth 1 -type f -executable -name '*DivAcerManagerMax*' ! -name '*.pdb' | head -n1)
+        if [ -z "$BIN" ]; then
+          BIN=$(find $PUBLISH_DIR -maxdepth 1 -type f -executable | head -1)
+        fi
+        cp "$BIN" "${{ env.package_dir }}/DAMX-GUI/DivAcerManagerMax"
+        chmod +x "${{ env.package_dir }}/DAMX-GUI/DivAcerManagerMax"
+        
+        # Copy Icons
+        if [ -f "Div-Acer-Manager-Max/DivAcerManagerMax/icon.png" ]; then
+          cp "Div-Acer-Manager-Max/DivAcerManagerMax/icon.png" "${{ env.package_dir }}/DAMX-GUI/"
+        fi
+        if [ -f "Div-Acer-Manager-Max/DivAcerManagerMax/iconTransparent.png" ]; then
+          cp "Div-Acer-Manager-Max/DivAcerManagerMax/iconTransparent.png" "${{ env.package_dir }}/DAMX-GUI/"
+        fi
+        
+        # Copy PDB (Useful for debugging)
+        if [ -f "$PUBLISH_DIR/DivAcerManagerMax.pdb" ]; then
+          cp "$PUBLISH_DIR/DivAcerManagerMax.pdb" "${{ env.package_dir }}/DAMX-GUI/"
+        fi
+        
+        echo "✓ GUI executable, icons, and PDB (if present) copied"
+    
+    - name: Copy Drivers
+      run: |
+        cp -r drivers-temp/* "${{ env.package_dir }}/Linuwu-Sense/"
+        echo "✓ Drivers copied"
+    
+    - name: Copy and Update Setup Script
+      run: |
+        if [ -f "Div-Acer-Manager-Max/scripts/local-setup.sh" ]; then
+          cp "Div-Acer-Manager-Max/scripts/local-setup.sh" "${{ env.package_dir }}/setup.sh"
+        else
+          echo "Error: local-setup.sh not found"
+          exit 1
+        fi
+        
+        # Update version information in setup script
+        sed -i "s/SCRIPT_VERSION\s*=\s*\".*\"/SCRIPT_VERSION=\"${{ steps.versions.outputs.gui_version }}\"/g" "${{ env.package_dir }}/setup.sh"
+        sed -i "s/PROJECT_VERSION\s*=\s*.*/PROJECT_VERSION=${{ steps.versions.outputs.gui_version }}/g" "${{ env.package_dir }}/setup.sh"
+        sed -i "s/DAEMON_VERSION\s*=\s*.*/DAEMON_VERSION=${{ steps.versions.outputs.daemon_version }}/g" "${{ env.package_dir }}/setup.sh"
+        sed -i "s/DRIVERS_VERSION\s*=\s*.*/DRIVERS_VERSION=${{ steps.versions.outputs.drivers_version }}/g" "${{ env.package_dir }}/setup.sh"
+        
+        chmod +x "${{ env.package_dir }}/setup.sh"
+        
+        if [ -f "Div-Acer-Manager-Max/scripts/nitro-key-detection.sh" ]; then
+          cp "Div-Acer-Manager-Max/scripts/nitro-key-detection.sh" "${{ env.package_dir }}/"
+        fi
+    
+    - name: Validate Packaged Installer
+      run: |
+        SETUP_SCRIPT="${{ env.package_dir }}/setup.sh"
+        bash -n "$SETUP_SCRIPT"
+        
+        for function_name in is_llvm_kernel prepare_secure_boot_signing sign_driver_module; do
+          if ! grep -Eq "^${function_name}\\(\\)[[:space:]]*\\{" "$SETUP_SCRIPT"; then
+            echo "Error: setup.sh is missing ${function_name}()"
+            exit 1
           fi
+        done
+        echo "✓ Packaged installer validation passed"
+    
+    - name: Create Release Information
+      run: |
+        cat > "${{ env.package_dir }}/release.txt" << EOF
+        DAMX Release Information
+        ========================
+        Project Version: ${{ steps.versions.outputs.gui_version }}
+        Daemon Version: ${{ steps.versions.outputs.daemon_version }}
+        Drivers Version: ${{ steps.versions.outputs.drivers_version }}
+        
+        Build Date: $(date)
+        Built on: $(uname -a)
+        GitHub Run: ${{ github.run_number }}
+        Commit: ${{ github.sha }}
+        EOF
+    
+    - name: Create Package Archive
+      run: |
+        tar -cJf "${{ env.package_dir }}.tar.xz" "${{ env.package_dir }}"
+        sha256sum "${{ env.package_dir }}.tar.xz" > "${{ env.package_dir }}.tar.xz.sha256"
+        
+        echo "Archive size: $(du -h ${{ env.package_dir }}.tar.xz | cut -f1)"
+    
+    - name: Upload Package as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DAMX-archive
+        path: |
+          ${{ env.package_dir }}.tar.xz
+          ${{ env.package_dir }}.tar.xz.sha256
+        retention-days: 30
+    
+    - name: Generate Release Notes
+      if: ${{ inputs.publish_release }}
+      run: |
+        cat > release_notes.md << EOF
+        # DAMX Release ${{ inputs.tag }}
+        
+        ## Version Information
+        - **Project Version**: ${{ steps.versions.outputs.gui_version }}
+        - **Daemon Version**: ${{ steps.versions.outputs.daemon_version }}
+        - **Drivers Version**: ${{ steps.versions.outputs.drivers_version }}
+        - **Drivers Type**: ${{ steps.versions.outputs.drivers_type }}
+        
+        ## Components
+        - **DAMX-Daemon**: Python daemon compiled with PyInstaller
+        - **DAMX-GUI**: .NET 9.0 GUI application (self-contained, linux-x64)
+        - **Linuwu-Sense**: Hardware drivers (${{ steps.versions.outputs.drivers_type }})
+        - **setup.sh**: Installation script
+        - **nitro-key-detection.sh**: Nitro key detection helper script
+        
+        ## Installation
+        1. Download the \`${{ env.package_dir }}.tar.xz\` file
+        2. Extract: \`tar -xJf ${{ env.package_dir }}.tar.xz\`
+        3. Run: \`cd ${{ env.package_dir }} && ./setup.sh\`
+        
+        ## Checksums
+        \`\`\`
+        $(cat ${{ env.package_dir }}.tar.xz.sha256)
+        \`\`\`
+        
+        ---
+        Built on: $(date)  
+        Commit: ${{ github.sha }}
+        EOF
 
-      - name: Package release archive (GUI + Daemon)
-        run: |
-          tar -C ./release -cf DAMX-${{ github.event.inputs.tag }}.tar DAMX-GUI DAMX-Daemon
-          xz -9e --threads=0 DAMX-${{ github.event.inputs.tag }}.tar
-
-      - name: Package PDB (if present)
-        run: |
-          if [ -f ./release/DivAcerManagerMax.pdb ]; then
-            tar -C ./release -cf DivAcerManagerMax.pdb.tar DivAcerManagerMax.pdb
-            xz -9e --threads=0 DivAcerManagerMax.pdb.tar
-          fi
-
-      - name: Upload DAMX archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: DAMX-archive
-          path: DAMX-${{ github.event.inputs.tag }}.tar.xz
-
-      - name: Upload PDB archive (if present)
-        if: ${{ hashFiles('DivAcerManagerMax.pdb.tar.xz') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: DivAcerManagerMax-pdb
-          path: DivAcerManagerMax.pdb.tar.xz
-
-  release:
-    needs: build
-    if: ${{ github.event.inputs.publish_release == 'true' }} 
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download DAMX archive
-        uses: actions/download-artifact@v4
-        with:
-          name: DAMX-archive
-
-      - name: Download PDB archive
-        if: always()
-        uses: actions/download-artifact@v4
-        with:
-          name: DivAcerManagerMax-pdb
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.event.inputs.release_name }}
-          tag_name: ${{ github.event.inputs.tag }}
-          prerelease: ${{ github.event.inputs.prerelease }}
-          files: |
-            DAMX-${{ github.event.inputs.tag }}.tar.xz
-            DivAcerManagerMax.pdb.tar.xz
-          token: ${{ secrets.GH_PAT_RELEASE }}
-
-
+    - name: Create GitHub Release
+      if: ${{ inputs.publish_release }}
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ inputs.tag }}
+        name: ${{ inputs.release_name != '' && inputs.release_name || format('DAMX {0}', inputs.tag) }}
+        prerelease: ${{ inputs.is_prerelease }}
+        body_path: release_notes.md
+        files: |
+          ${{ env.package_dir }}.tar.xz
+          ${{ env.package_dir }}.tar.xz.sha256
+        token: ${{ secrets.GH_PAT_RELEASE }}
+        
+    - name: Build Summary
+      run: |
+        echo "🎉 Build and packaging completed successfully!"
+        echo ""
+        echo "📊 Build Summary:"
+        echo "- Tag: ${{ inputs.tag }}"
+        echo "- Pre-release: ${{ inputs.is_prerelease }}"
+        echo "- Published: ${{ inputs.publish_release }}"
+        echo "- Drivers: ${{ inputs.drivers_version }}"
+        echo "- Package: ${{ env.package_dir }}.tar.xz"
+        echo "- Size: $(du -h ${{ env.package_dir }}.tar.xz | cut -f1)"
