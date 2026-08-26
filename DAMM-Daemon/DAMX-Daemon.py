@@ -21,8 +21,8 @@ import traceback
 from pathlib import Path
 from enum import Enum
 from PowerSourceDetection import PowerSourceDetector 
-from typing import Dict, List, Tuple, Set
-# from KeyboardMonitor import KeyboardMonitor
+from typing import Dict, List, Tuple, Set, Optional
+from KeyboardMonitor import KeyboardMonitor
 
 # Constants
 VERSION = "0.5.2"
@@ -68,7 +68,7 @@ if os.geteuid() != 0:
 
 # Configure logging
 log = logging.getLogger("DAMXDaemon")
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Console handler
@@ -537,7 +537,7 @@ class DAMXManager:
         """Write to a VFS file"""
         try:
             with open(path, 'w') as f:
-                f.write(str(value))
+                f.write(f"{str(value).strip()}\n")
             return True
         except Exception as e:
             log.error(f"Failed to write to {path}: {e}")
@@ -810,11 +810,11 @@ class DAMXManager:
             log.error(f"Invalid fan speeds. Values must be between 0 and 100: cpu={cpu}, gpu={gpu}")
             return False
 
+        # Pad values to 3 digits (e.g., 000,000) to bypass the C driver's string truncation bug on short inputs
         return self._write_file(
             os.path.join(self.base_path, "fan_speed"),
-            f"{cpu},{gpu}"
+            f"{cpu:03d},{gpu:03d}"
         )
-
 
     def get_lcd_override(self) -> str:
         """Get LCD override status"""
@@ -1018,8 +1018,9 @@ class DAMXManager:
 class DaemonServer:
     """Unix Socket server for IPC with the GUI client"""
 
-    def __init__(self, manager: DAMXManager):
+    def __init__(self, manager: DAMXManager, power_monitor: Optional[PowerSourceDetector] = None):
         self.manager = manager
+        self.power_monitor = power_monitor
         self.socket = None
         self.running = False
         self.clients = []
@@ -1144,7 +1145,11 @@ class DaemonServer:
 
     def process_command(self, command: str, params: Dict) -> Dict:
         """Process a command from the client"""
-        log.info(f"Processing command: {command} with params: {params}")
+        # Demote 1-second GUI polling to DEBUG level so INFO stays clean
+        if command != "get_all_settings":
+            log.info(f"Processing command: {command} with params: {params}")
+        else:
+            log.debug(f"Processing command: {command} with params: {params}")
 
         try:
             if command == "get_all_settings":
@@ -1182,6 +1187,11 @@ class DaemonServer:
 
                 profile = params.get("profile", "")
                 success = self.manager.set_thermal_profile(profile)
+
+                # Persist preference to power state monitor
+                if success and self.power_monitor:
+                    self.power_monitor.on_user_profile_change(profile)
+
                 return {
                     "success": success,
                     "data": {"profile": profile} if success else None,
@@ -1531,6 +1541,8 @@ class DAMXDaemon:
         self.manager = None
         self.server = None
         self.config = None
+        self.power_monitor = None
+        self.keyboard_monitor = None
 
     def load_config(self):
         """Load configuration from file"""
@@ -1560,9 +1572,7 @@ class DAMXDaemon:
         if 'General' in config and 'LogLevel' in config['General']:
             log_level = config['General']['LogLevel'].upper()
             if log_level in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                #log.setLevel(getattr(logging, log_level))
-                log.setLevel(logging.DEBUG)
-                
+                log.setLevel(getattr(logging, log_level, logging.INFO))
                 log.info(f"Log level set to {log_level}")
 
         return config
@@ -1578,19 +1588,18 @@ class DAMXDaemon:
             log.info(f"Driver Version: {self.manager.get_driver_version()}")
 
             # Initialize keyboard monitor early
-            # self.keyboard_monitor = KeyboardMonitor(
-            #     target_keycode=425, 
-            #     command_to_run="DAMX",  # Updated command
-            #     logger=log
-            # )
-            # kb_success = self.keyboard_monitor.start_monitoring()
+            self.keyboard_monitor = KeyboardMonitor(
+                manager=self.manager, 
+                logger=log
+            )
+            kb_success = self.keyboard_monitor.start_monitoring()
             
-            # if not kb_success:
-            #     log.error("Failed to start keyboard monitoring")
-            #     # Don't return False here - continue with reduced functionality
+            if not kb_success:
+                log.error("Failed to start keyboard monitoring")
 
             # Initialize power monitor (started in run())
             self.power_monitor = PowerSourceDetector(self.manager)
+            self.manager.power_monitor = self.power_monitor
 
             # Log detected features
             features_str = ", ".join(sorted(self.manager.available_features))
@@ -1601,8 +1610,6 @@ class DAMXDaemon:
             log.error(f"Failed to set up daemon: {e}")
             log.error(traceback.format_exc())
             return False
-    
-
 
     def run(self):
         """Run the daemon"""
@@ -1614,21 +1621,12 @@ class DAMXDaemon:
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
 
-        # if self.keyboard_monitor:
-        #     success = self.keyboard_monitor.start_monitoring()
-        #     if success:
-        #         log.info("Keyboard monitoring started successfully")
-        #     else:
-        #         log.warning("Failed to start keyboard monitoring")
-
         # Set up and run the server
         try:
             self.running = True
-            self.server = DaemonServer(self.manager)
+            self.server = DaemonServer(self.manager, self.power_monitor)
             self.power_monitor.start_monitoring()
             self.server.start()
-            # Start keyboard monitoring
-            
         except Exception as e:
             log.error(f"Error running daemon: {e}")
             log.error(traceback.format_exc())
@@ -1642,11 +1640,7 @@ class DAMXDaemon:
         # Stop server and clean up socket
         if self.server:
             self.server.stop()
-            self.server.cleanup_socket()  # Additional cleanup
-            # Stop keyboard monitoring
-        # if hasattr(self, 'keyboard_monitor') and self.keyboard_monitor:
-        #     self.keyboard_monitor.stop_monitoring()
-        #     log.info("Keyboard monitoring stopped")
+            self.server.cleanup_socket()
     
         if self.power_monitor:
             self.power_monitor.stop_monitoring()
@@ -1666,6 +1660,7 @@ class DAMXDaemon:
         self.running = False
         if self.server:
             self.server.running = False
+            self.server.cleanup_socket()
 
 def parse_args():
     """Parse command line arguments"""
@@ -1675,16 +1670,6 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help="Enable debug mode")
     parser.add_argument('--config', type=str, help=f"Path to config file (default: {CONFIG_PATH})")
     return parser.parse_args()
-
-def signal_handler(self, sig, frame):
-    """Handle termination signals"""
-    log.info(f"Received signal {sig}, shutting down...")
-    self.running = False
-    if self.server:
-        self.server.running = False
-    # Ensure socket is cleaned up
-    if hasattr(self, 'server') and self.server:
-        self.server.cleanup_socket()
 
 def main():
     """Main function"""
@@ -1706,8 +1691,6 @@ def main():
     else:
         log.error("Failed to set up daemon, exiting...")
         sys.exit(1)
-
-    
 
 
 if __name__ == "__main__":
