@@ -21,7 +21,7 @@ import traceback
 from pathlib import Path
 from enum import Enum
 from PowerSourceDetection import PowerSourceDetector 
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Set, Optional
 from KeyboardMonitor import KeyboardMonitor
 
 # Constants
@@ -1018,8 +1018,9 @@ class DAMXManager:
 class DaemonServer:
     """Unix Socket server for IPC with the GUI client"""
 
-    def __init__(self, manager: DAMXManager):
+    def __init__(self, manager: DAMXManager, power_monitor: Optional[PowerSourceDetector] = None):
         self.manager = manager
+        self.power_monitor = power_monitor
         self.socket = None
         self.running = False
         self.clients = []
@@ -1182,6 +1183,11 @@ class DaemonServer:
 
                 profile = params.get("profile", "")
                 success = self.manager.set_thermal_profile(profile)
+
+                # Persist preference to power state monitor
+                if success and self.power_monitor:
+                    self.power_monitor.on_user_profile_change(profile)
+
                 return {
                     "success": success,
                     "data": {"profile": profile} if success else None,
@@ -1531,6 +1537,8 @@ class DAMXDaemon:
         self.manager = None
         self.server = None
         self.config = None
+        self.power_monitor = None
+        self.keyboard_monitor = None
 
     def load_config(self):
         """Load configuration from file"""
@@ -1560,9 +1568,7 @@ class DAMXDaemon:
         if 'General' in config and 'LogLevel' in config['General']:
             log_level = config['General']['LogLevel'].upper()
             if log_level in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                #log.setLevel(getattr(logging, log_level))
                 log.setLevel(logging.DEBUG)
-                
                 log.info(f"Log level set to {log_level}")
 
         return config
@@ -1599,8 +1605,6 @@ class DAMXDaemon:
             log.error(f"Failed to set up daemon: {e}")
             log.error(traceback.format_exc())
             return False
-    
-
 
     def run(self):
         """Run the daemon"""
@@ -1612,21 +1616,12 @@ class DAMXDaemon:
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
 
-        # if self.keyboard_monitor:
-        #     success = self.keyboard_monitor.start_monitoring()
-        #     if success:
-        #         log.info("Keyboard monitoring started successfully")
-        #     else:
-        #         log.warning("Failed to start keyboard monitoring")
-
         # Set up and run the server
         try:
             self.running = True
-            self.server = DaemonServer(self.manager)
+            self.server = DaemonServer(self.manager, self.power_monitor)
             self.power_monitor.start_monitoring()
             self.server.start()
-            # Start keyboard monitoring
-            
         except Exception as e:
             log.error(f"Error running daemon: {e}")
             log.error(traceback.format_exc())
@@ -1640,11 +1635,7 @@ class DAMXDaemon:
         # Stop server and clean up socket
         if self.server:
             self.server.stop()
-            self.server.cleanup_socket()  # Additional cleanup
-            # Stop keyboard monitoring
-        # if hasattr(self, 'keyboard_monitor') and self.keyboard_monitor:
-        #     self.keyboard_monitor.stop_monitoring()
-        #     log.info("Keyboard monitoring stopped")
+            self.server.cleanup_socket()
     
         if self.power_monitor:
             self.power_monitor.stop_monitoring()
@@ -1664,6 +1655,7 @@ class DAMXDaemon:
         self.running = False
         if self.server:
             self.server.running = False
+            self.server.cleanup_socket()
 
 def parse_args():
     """Parse command line arguments"""
@@ -1673,16 +1665,6 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help="Enable debug mode")
     parser.add_argument('--config', type=str, help=f"Path to config file (default: {CONFIG_PATH})")
     return parser.parse_args()
-
-def signal_handler(self, sig, frame):
-    """Handle termination signals"""
-    log.info(f"Received signal {sig}, shutting down...")
-    self.running = False
-    if self.server:
-        self.server.running = False
-    # Ensure socket is cleaned up
-    if hasattr(self, 'server') and self.server:
-        self.server.cleanup_socket()
 
 def main():
     """Main function"""
@@ -1704,8 +1686,6 @@ def main():
     else:
         log.error("Failed to set up daemon, exiting...")
         sys.exit(1)
-
-    
 
 
 if __name__ == "__main__":
