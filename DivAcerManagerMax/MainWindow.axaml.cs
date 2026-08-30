@@ -760,48 +760,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await LoadSettingsAsync();
     }
 
-    private async void ManualFanControlRadioBox_Click(object? sender, RoutedEventArgs e)
+    private void ManualFanControlRadioBox_Click(object sender, RoutedEventArgs e)
     {
         _isManualFanControl = true;
         if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.IsChecked = true;
         if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.IsChecked = false;
-        if (_maxFanSpeedRadioButton != null) _maxFanSpeedRadioButton.IsChecked = false;
+    }
 
-        // Prevent 0,0 from being dispatched if switching from Auto
-        if (_cpuFanSpeed == 0) _cpuFanSpeed = 50;
-        if (_gpuFanSpeed == 0) _gpuFanSpeed = 70;
-
-        if (_cpuFanSlider != null) _cpuFanSlider.Value = _cpuFanSpeed;
-        if (_gpuFanSlider != null) _gpuFanSlider.Value = _gpuFanSpeed;
-
-        if (_isConnected)
+    private void CpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == Slider.ValueProperty)
         {
-            try
-            {
-                await _client.SetFanSpeedAsync(_cpuFanSpeed, _gpuFanSpeed);
-            }
-            catch (Exception ex)
-            {
-                await ShowMessageBox("Fan Speed Error", $"Failed to set Manual mode: {ex.Message}");
-            }
+            _cpuFanSpeed = Convert.ToInt32(e.NewValue);
+            if (_cpuFanTextBlock != null)
+                _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
         }
     }
 
-    private void CpuFanSlider_ValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    private void GpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
     {
-        _cpuFanSpeed = Convert.ToInt32(e.NewValue);
-        if (_cpuFanTextBlock != null)
-            _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
+        if (e.Property == Slider.ValueProperty)
+        {
+            _gpuFanSpeed = Convert.ToInt32(e.NewValue);
+            if (_gpuFanTextBlock != null)
+                _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
+        }
     }
 
-    private void GpuFanSlider_ValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    {
-        _gpuFanSpeed = Convert.ToInt32(e.NewValue);
-        if (_gpuFanTextBlock != null)
-            _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
-    }
-
-    private async void SetManualSpeedButton_OnClick(object? sender, RoutedEventArgs e)
+    private async void SetManualSpeedButton_OnClick(object sender, RoutedEventArgs e)
     {
         if (!_isConnected || _isSettingFanSpeed)
             return;
@@ -817,11 +803,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            await ShowMessageBox("Fan Speed Error", $"Failed to set fan speed: {ex.Message}");
+            await ShowMessageBox(
+                "Fan Speed Error",
+                $"Failed to set fan speed: {ex.Message}"
+            );
         }
         finally
         {
             _isSettingFanSpeed = false;
+
             if (_setManualSpeedButton != null)
                 _setManualSpeedButton.IsEnabled = true;
         }
