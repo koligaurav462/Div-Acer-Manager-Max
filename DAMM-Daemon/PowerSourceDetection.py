@@ -1,126 +1,208 @@
 #!/usr/bin/env python3
-# DAMX Power Source Detection - Monitors power source and adjusts thermal profiles accordingly
 
-import os
+import glob
+import json
 import logging
-import subprocess
-from threading import Timer
+import os
+import threading
+from typing import Any, List, Optional
 
-# Get logger from main daemon
 log = logging.getLogger("DAMXDaemon")
+STATE_FILE = "/var/lib/damx/power_state.json"
+
+_NON_AC_TYPES = {"Battery", "UPS"}
+
 
 class PowerSourceDetector:
-    """Detects power source and manages automatic mode switching"""
+    DEFAULT_AC_FALLBACKS: List[str] = ["balanced-performance", "balanced", "quiet"]
+    DEFAULT_BAT_FALLBACKS: List[str] = ["low-power", "balanced"]
 
-    def __init__(self, manager):
-        self.manager = manager
-        self.current_source = None
-        self.check_interval = 5  # seconds
-        self.timer = None
-        
-        log.info("PowerSourceDetector initialized")
-        
-        self.possible_power_supply_paths = [
-            "/sys/class/power_supply/AC/online",
-            "/sys/class/power_supply/ACAD/online",
-            "/sys/class/power_supply/ADP1/online",
-            "/sys/class/power_supply/AC0/online"
-        ]
+    def __init__(self, manager: Any, poll_interval: float = 2.0) -> None:
+        self.manager: Any = manager
+        self.poll_interval: float = poll_interval
 
-    def start_monitoring(self):
-        """Start periodic power source checking"""
-        self.check_power_source()
-        log.info("Monitoring power source started")
+        self.is_ac: Optional[bool] = None
+        self.last_ac_profile: str = "balanced-performance"
+        self.last_battery_profile: str = "low-power"
 
-    def stop_monitoring(self):
-        """Stop periodic power source checking"""
-        if self.timer:
-            self.timer.cancel()
+        self._lock: threading.RLock = threading.RLock()
+        self._stop_event: threading.Event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
 
-    def check_power_source(self):
-        """Check current power source and adjust settings if needed"""
-        is_plugged_in = self._is_ac_connected()
+        self._load_state()
+        log.info(
+            "PowerSourceDetector initialized (AC target: '%s', Battery target: '%s')",
+            self.last_ac_profile,
+            self.last_battery_profile,
+        )
 
-        # Only take action if power state changed
-        if is_plugged_in != self.current_source:
-            self.current_source = is_plugged_in
-            self._handle_power_change(is_plugged_in)
-
-        # Schedule next check
-        self.timer = Timer(self.check_interval, self.check_power_source)
-        self.timer.daemon = True
-        self.timer.start()
-
-    def _is_ac_connected(self) -> bool:
-        """Check if AC power is connected"""
-        try:
-            # Try each possible path for power supply status
-            for path in self.possible_power_supply_paths:
-                if os.path.exists(path):
-                    with open(path, 'r') as f:
-                        status = f.read().strip()
-                        return status == "1"
-
-            # If no power supply file is found, try command-line tools
-            return self._check_using_upower() or self._check_using_acpi()
-
-        except Exception as e:
-            log.error(f"Error checking power status: {e}")
-            return False
-
-    def _check_using_upower(self) -> bool:
-        """Check power status using upower"""
-        try:
-            result = subprocess.run(
-                ["upower", "-i", "/org/freedesktop/UPower/devices/line_power_AC"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return "online: yes" in result.stdout
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            log.error(f"upower check failed: {e}")
-            return False
-
-    def _check_using_acpi(self) -> bool:
-        """Check power status using acpi"""
-        try:
-            result = subprocess.run(
-                ["acpi", "-a"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return "on-line" in result.stdout
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            log.error(f"acpi check failed: {e}")
-            return False
-
-    def _handle_power_change(self, is_plugged_in: bool):
-        """Handle power source changes"""
-        if not hasattr(self.manager, 'available_features') or "thermal_profile" not in self.manager.available_features:
+    def _load_state(self) -> None:
+        if not os.path.exists(STATE_FILE):
             return
 
-        current_profile = self.manager.get_thermal_profile()
-        available_profiles = self.manager.get_thermal_profile_choices()
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                self.last_ac_profile = data.get("last_ac_profile", self.last_ac_profile)
+                self.last_battery_profile = data.get("last_battery_profile", self.last_battery_profile)
+        except Exception as e:
+            log.warning("Could not load power state file %s: %s", STATE_FILE, e)
 
-        if is_plugged_in:
-            # On AC power - no restrictions
-            log.info("Switched to AC power")
+    def _save_state(self) -> None:
+        state_dir = os.path.dirname(STATE_FILE)
+        tmp_file = f"{STATE_FILE}.tmp.{os.getpid()}"
+        data = {
+            "last_ac_profile": self.last_ac_profile,
+            "last_battery_profile": self.last_battery_profile,
+        }
+
+        try:
+            os.makedirs(state_dir, exist_ok=True)
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(tmp_file, STATE_FILE)
+
+            try:
+                dir_fd = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+
+        except Exception as e:
+            log.error("Failed to save power state file: %s", e)
+            if os.path.exists(tmp_file):
+                try:
+                    os.unlink(tmp_file)
+                except OSError:
+                    pass
+
+    def is_plugged_in(self) -> bool:
+        for type_path in glob.glob("/sys/class/power_supply/*/type"):
+            try:
+                with open(type_path, "r", encoding="utf-8") as tf:
+                    dev_type = tf.read().strip()
+
+                if dev_type in _NON_AC_TYPES:
+                    continue
+
+                online_path = type_path.replace("/type", "/online")
+                if os.path.exists(online_path):
+                    with open(online_path, "r", encoding="utf-8") as of:
+                        if of.read().strip() == "1":
+                            return True
+            except OSError:
+                continue
+        return False
+
+    def start_monitoring(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                log.debug("start_monitoring called but a poller thread is already running.")
+                return
+
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._monitor_loop,
+                daemon=True,
+                name="DAMX-PowerPoller",
+            )
+            self._thread.start()
+            log.info("Monitoring power source started.")
+
+    def stop_monitoring(self) -> None:
+        thread = self._thread
+        if thread is None:
+            log.debug("stop_monitoring called but no poller thread was running.")
+            return
+
+        self._stop_event.set()
+        thread.join(timeout=self.poll_interval + 1.0)
+
+        if thread.is_alive():
+            log.warning(
+                "Poller thread did not exit within %.1fs; refusing to clear reference.",
+                self.poll_interval + 1.0,
+            )
+            return
+
+        self._thread = None
+        log.info("Monitoring power source stopped.")
+
+    def _monitor_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                current_ac = self.is_plugged_in()
+
+                with self._lock:
+                    if current_ac != self.is_ac:
+                        self.is_ac = current_ac
+                        self._apply_power_profile(self.is_ac)
+
+            except Exception as e:
+                log.error("Error in power monitor loop: %s", e)
+
+            self._stop_event.wait(self.poll_interval)
+
+    def _apply_power_profile(self, is_ac: bool) -> None:
+        if (
+            not hasattr(self.manager, "available_features")
+            or "thermal_profile" not in self.manager.available_features
+        ):
+            return
+
+        try:
+            choices = self.manager.get_thermal_profile_choices() or []
+        except Exception as e:
+            log.error("Failed to query available thermal profiles: %s", e)
+            return
+
+        preferred = self.last_ac_profile if is_ac else self.last_battery_profile
+        target: Optional[str] = None
+
+        if preferred in choices:
+            target = preferred
         else:
-            # On battery power - enforce balanced or eco mode
-            log.info("Switched to battery power")
+            fallbacks = self.DEFAULT_AC_FALLBACKS if is_ac else self.DEFAULT_BAT_FALLBACKS
+            for fallback in fallbacks:
+                if fallback in choices:
+                    target = fallback
+                    break
 
-            if current_profile not in ["balanced", "quiet", "power-saver"]:
-                # If current profile isn't battery-friendly, switch to balanced
-                if "balanced" in available_profiles:
-                    log.info("Auto-switching to balanced mode for battery power")
-                    self.manager.set_thermal_profile("balanced")
-                elif "quiet" in available_profiles:
-                    log.info("Auto-switching to quiet mode for battery power")
-                    self.manager.set_thermal_profile("quiet")
-                elif "power-saver" in available_profiles:
-                    log.info("Auto-switching to power-saver mode for battery power")
-                    self.manager.set_thermal_profile("power-saver")
+        if target:
+            state_label = "AC" if is_ac else "Battery"
+            log.info("Power transition (%s) -> setting thermal profile '%s'", state_label, target)
+            try:
+                self.manager.set_thermal_profile(target)
+                if is_ac:
+                    self.last_ac_profile = target
                 else:
-                    log.warning("No battery-friendly thermal profile available")
+                    self.last_battery_profile = target
+                self._save_state()
+            except Exception as e:
+                log.error("Failed applying profile '%s': %s", target, e)
+        else:
+            log.warning(
+                "No compatible profile found for %s (Available: %s)",
+                "AC" if is_ac else "Battery",
+                choices,
+            )
+
+    def on_user_profile_change(self, profile: str) -> None:
+        with self._lock:
+            if self.is_ac is None:
+                self.is_ac = self.is_plugged_in()
+
+            if self.is_ac:
+                self.last_ac_profile = profile
+                log.info("Saved explicit user AC preference: '%s'", profile)
+            else:
+                self.last_battery_profile = profile
+                log.info("Saved explicit user Battery preference: '%s'", profile)
+
+            self._save_state()

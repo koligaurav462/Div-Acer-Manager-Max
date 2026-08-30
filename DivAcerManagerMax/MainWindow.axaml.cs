@@ -7,9 +7,11 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
+using Avalonia.Threading;
 using MsBox.Avalonia;
 
 namespace DivAcerManagerMax;
@@ -96,13 +98,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private ColorPicker _zone2ColorPicker;
     private ColorPicker _zone3ColorPicker;
     private ColorPicker _zone4ColorPicker;
+    private DispatcherTimer? _syncTimer;
+    private bool _isPolling = false;
+    private bool _isInitialized = false;
+    private bool _isUpdatingUI = false;
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
         _client = new DAMXClient();
-        Loaded += MainWindow_Loaded;
+
+        BindControls();
+        AttachEventHandlers();
+        InitializeAsync();
+
+        _syncTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(1000)
+        };
+        _syncTimer.Tick += SyncTimer_Tick;
+        _syncTimer.Start();
+
+        Closing += (_, _) => _syncTimer?.Stop();
     }
 
     public bool IsCalibrating
@@ -114,13 +132,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void InitializeComponent()
     {
         AvaloniaXamlLoader.Load(this);
-    }
-
-    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
-    {
-        BindControls();
-        AttachEventHandlers();
-        InitializeAsync();
     }
 
     private void BindControls()
@@ -194,12 +205,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachEventHandlers()
     {
-        // Thermal Profile handlers
-        if (_lowPowerProfileButton != null) _lowPowerProfileButton.IsCheckedChanged += ProfileButton_Checked;
-        if (_quietProfileButton != null) _quietProfileButton.IsCheckedChanged += ProfileButton_Checked;
-        if (_balancedProfileButton != null) _balancedProfileButton.IsCheckedChanged += ProfileButton_Checked;
-        if (_performanceProfileButton != null) _performanceProfileButton.IsCheckedChanged += ProfileButton_Checked;
-        if (_turboProfileButton != null) _turboProfileButton.IsCheckedChanged += ProfileButton_Checked;
+        // Thermal Profile handlers (Use Click instead of IsCheckedChanged to prevent programmatic trigger loops)
+        if (_lowPowerProfileButton != null) _lowPowerProfileButton.Click += ProfileButton_Click;
+        if (_quietProfileButton != null) _quietProfileButton.Click += ProfileButton_Click;
+        if (_balancedProfileButton != null) _balancedProfileButton.Click += ProfileButton_Click;
+        if (_performanceProfileButton != null) _performanceProfileButton.Click += ProfileButton_Click;
+        if (_turboProfileButton != null) _turboProfileButton.Click += ProfileButton_Click;
 
         // Power toggle switch
         if (_powerToggleSwitch != null)
@@ -214,10 +225,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         // Fan control handlers
         if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.Click += ManualFanControlRadioBox_Click;
-        if (_cpuFanSlider != null) _cpuFanSlider.PropertyChanged += CpuFanSlider_ValueChanged;
-        if (_gpuFanSlider != null) _gpuFanSlider.PropertyChanged += GpuFanSlider_ValueChanged;
+        if (_cpuFanSlider != null) _cpuFanSlider.ValueChanged += CpuFanSlider_ValueChanged;
+        if (_gpuFanSlider != null) _gpuFanSlider.ValueChanged += GpuFanSlider_ValueChanged;
         if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.Click += AutoFanSpeedRadioButtonClick;
-        if (_setManualSpeedButton != null) _setManualSpeedButton.Click += SetManualSpeedButton_OnClick;
+        // Note: SetManualSpeedButton_OnClick is already wired via Click="..." in MainWindow.axaml;
+        // this second subscription was redundant (harmless due to the _isSettingFanSpeed guard, but removed for clarity).
 
         // Battery calibration handlers
         if (_startCalibrationButton != null) _startCalibrationButton.Click += StartCalibrationButton_Click;
@@ -226,11 +238,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 
         // Keyboard lighting handlers
-        if (_keyBrightnessSlider != null) _keyBrightnessSlider.PropertyChanged += KeyboardBrightnessSlider_ValueChanged;
+        if (_keyBrightnessSlider != null) _keyBrightnessSlider.ValueChanged += KeyboardBrightnessSlider_ValueChanged;
         if (_applyKeyboardColorsButton != null) _applyKeyboardColorsButton.Click += ApplyKeyboardColorsButton_Click;
 
         // Lighting effects handlers
-        if (_lightingSpeedSlider != null) _lightingSpeedSlider.PropertyChanged += LightingSpeedSlider_ValueChanged;
+        if (_lightingSpeedSlider != null) _lightingSpeedSlider.ValueChanged += LightingSpeedSlider_ValueChanged;
         if (_lightingEffectsApplyButton != null) _lightingEffectsApplyButton.Click += LightingEffectsApplyButton_Click;
 
         // System settings handlers
@@ -313,29 +325,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UpdateUIBasedOnPowerSource()
     {
-        var isPluggedIn = _powerToggleSwitch?.IsChecked ?? false;
-
-        if (_lowPowerProfileButton != null)
-            _lowPowerProfileButton.IsVisible = _lowPowerProfileButton.IsEnabled && !isPluggedIn;
-
-        if (_quietProfileButton != null)
-            _quietProfileButton.IsVisible = _quietProfileButton.IsEnabled && isPluggedIn;
-
-        if (_balancedProfileButton != null)
-            _balancedProfileButton.IsVisible = _balancedProfileButton.IsEnabled;
-
-        if (_performanceProfileButton != null)
-            _performanceProfileButton.IsVisible = _performanceProfileButton.IsEnabled && isPluggedIn;
-
-        if (_turboProfileButton != null)
-            _turboProfileButton.IsVisible = _turboProfileButton.IsEnabled && isPluggedIn;
-
-        if (_balancedProfileButton != null &&
-            ((_lowPowerProfileButton?.IsChecked == true && !_lowPowerProfileButton.IsVisible) ||
-             (_quietProfileButton?.IsChecked == true && !_quietProfileButton.IsVisible) ||
-             (_performanceProfileButton?.IsChecked == true && !_performanceProfileButton.IsVisible) ||
-             (_turboProfileButton?.IsChecked == true && !_turboProfileButton.IsVisible)))
-            _balancedProfileButton.IsChecked = true;
+        UpdateProfileButtons();
     }
 
     public async void InitializeAsync()
@@ -347,6 +337,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 _daemonErrorGrid.IsVisible = false;
                 await LoadSettingsAsync();
+                _isInitialized = true;
             }
             else
             {
@@ -407,6 +398,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
             };
 
+        // 1. Update visibility and enabled states
         foreach (var config in profileConfigs.Values)
             if (config.button != null)
             {
@@ -425,16 +417,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
         }
 
+        // 2. Find target and explicitly set IsChecked on every button
+        RadioButton? targetButton = null;
         if (!string.IsNullOrEmpty(_settings.ThermalProfile.Current))
         {
             var currentProfileKey = _settings.ThermalProfile.Current.ToLower();
             if (profileConfigs.TryGetValue(currentProfileKey, out var config) && config.button?.IsEnabled == true)
             {
-                config.button.IsChecked = true;
+                targetButton = config.button;
                 if (_thermalProfileInfoText != null)
                     _thermalProfileInfoText.Text = config.description;
             }
         }
+
+        foreach (var config in profileConfigs.Values)
+            if (config.button != null)
+                config.button.IsChecked = (config.button == targetButton);
     }
 
     private void ApplySettingsToUI()
@@ -686,9 +684,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
 
-    private async void ProfileButton_Checked(object sender, RoutedEventArgs e)
+    private async void SyncTimer_Tick(object? sender, EventArgs e)
     {
-        if (!_isConnected || sender is not RadioButton button || button.IsChecked != true) return;
+        if (!_isConnected || !_isInitialized || _isPolling) return;
+        _isPolling = true;
+        try
+        {
+            var newSettings = await _client.GetAllSettingsAsync();
+            if (newSettings?.ThermalProfile?.Current != null &&
+                !string.IsNullOrEmpty(newSettings.ThermalProfile.Current) &&
+                (_settings?.ThermalProfile?.Current == null ||
+                 !string.Equals(newSettings.ThermalProfile.Current, _settings.ThermalProfile.Current, StringComparison.OrdinalIgnoreCase)))
+            {
+                _settings = newSettings;
+                await Dispatcher.UIThread.InvokeAsync(UpdateProfileButtons);
+            }
+        }
+        catch
+        {
+            // Silently retry on next tick
+        }
+        finally
+        {
+            _isPolling = false;
+        }
+    }
+
+    private async void ProfileButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!_isInitialized || !_isConnected || sender is not RadioButton button || button.IsChecked != true) return;
 
         var profile = button.Name switch
         {
@@ -743,24 +767,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.IsChecked = false;
     }
 
-    private void CpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void CpuFanSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-        {
-            _cpuFanSpeed = Convert.ToInt32(e.NewValue);
-            if (_cpuFanTextBlock != null)
-                _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
-        }
+        _cpuFanSpeed = Convert.ToInt32(e.NewValue);
+        if (_cpuFanTextBlock != null)
+            _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
     }
 
-    private void GpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void GpuFanSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-        {
-            _gpuFanSpeed = Convert.ToInt32(e.NewValue);
-            if (_gpuFanTextBlock != null)
-                _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
-        }
+        _gpuFanSpeed = Convert.ToInt32(e.NewValue);
+        if (_gpuFanTextBlock != null)
+            _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
     }
 
     private async void SetManualSpeedButton_OnClick(object sender, RoutedEventArgs e)
@@ -793,15 +811,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async void AutoFanSpeedRadioButtonClick(object sender, RoutedEventArgs e)
+    private async void AutoFanSpeedRadioButtonClick(object? sender, RoutedEventArgs e)
     {
-        if (_isConnected)
+        if (!_isConnected) return;
+
+        _isManualFanControl = false;
+        if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.IsChecked = false;
+        if (_maxFanSpeedRadioButton != null) _maxFanSpeedRadioButton.IsChecked = false;
+
+        _cpuFanSpeed = 0;
+        _gpuFanSpeed = 0;
+
+        if (_cpuFanSlider != null) _cpuFanSlider.Value = 0;
+        if (_gpuFanSlider != null) _gpuFanSlider.Value = 0;
+        if (_cpuFanTextBlock != null) _cpuFanTextBlock.Text = "Auto";
+        if (_gpuFanTextBlock != null) _gpuFanTextBlock.Text = "Auto";
+
+        try 
         {
             await _client.SetFanSpeedAsync(0, 0);
-            _isManualFanControl = false;
-            if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.IsChecked = false;
-            await LoadSettingsAsync();
         }
+        catch (Exception ex)
+        {
+            await ShowMessageBox("Fan Speed Error", $"Failed to set Auto mode: {ex.Message}");
+        }
+        
+        await LoadSettingsAsync();
     }
 
     private async void MaxFanSpeedRadioButton_OnClick(object? sender, RoutedEventArgs e)
@@ -856,10 +891,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             await _client.SetBatteryLimiterAsync(checkBox.IsChecked ?? false);
     }
 
-    private void KeyboardBrightnessSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void KeyboardBrightnessSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-            SetKeyboardBrightness(Convert.ToInt32(e.NewValue), false);
+        SetKeyboardBrightness(Convert.ToInt32(e.NewValue), false);
     }
 
     private async void ApplyKeyboardColorsButton_Click(object sender, RoutedEventArgs e)
@@ -878,10 +912,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void LightingSpeedSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void LightingSpeedSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-            SetLightingSpeed(Convert.ToInt32(e.NewValue), false);
+        SetLightingSpeed(Convert.ToInt32(e.NewValue), false);
     }
 
     private async void LightingEffectsApplyButton_Click(object sender, RoutedEventArgs e)
