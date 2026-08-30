@@ -324,6 +324,22 @@ class KeyboardMonitor:
 
                     except BlockingIOError:
                         continue
+                    except OSError as e:
+                        # Device node disappeared (unplug, suspend/resume renumbering).
+                        # Must retire this fd or select() flags it "ready" again on
+                        # every pass, spinning the loop - this is the Errno 19 flood.
+                        dead_path = file_descriptors.get(fd, "<unknown>")
+                        self.log.warning(f"Device {dead_path} disappeared ({e}); removing from monitor")
+                        try:
+                            os.close(fd)
+                        except Exception:
+                            pass
+                        file_descriptors.pop(fd, None)
+
+                        if not file_descriptors:
+                            self.log.error("All monitored input devices are gone; will rescan in 5s")
+                            time.sleep(5)
+                            return
                     except Exception as e:
                         self.log.error(f"Error reading from device {file_descriptors.get(fd)}: {e}")
         finally:
@@ -333,13 +349,31 @@ class KeyboardMonitor:
                 except Exception:
                     pass
 
+    def _monitor_with_restart(self):
+        """Wrapper to automatically restart monitor_loop if it exits due to device loss."""
+        while self.running:
+            # monitor_loop will return when all devices are lost
+            self.monitor_loop()
+
+            # If the daemon is shutting down, exit the wrapper
+            if not self.running:
+                break
+
+            self.log.info("Keyboard monitor loop exited, waiting 5s before rescanning devices...")
+            time.sleep(5)
+            # monitor_loop() calls find_keyboard_devices() at its own start,
+            # so simply looping back around is enough to rescan and resume.
+
     def start_monitoring(self):
         """Start background keyboard monitoring thread."""
         if self.running:
             return True
 
         self.running = True
-        self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True, name="DAMX-KeyboardMonitor")
+        # Use the restart wrapper instead of monitor_loop directly so hotkeys
+        # survive device loss (suspend/resume, USB reconnects) instead of the
+        # monitoring thread quietly dying the first time a device disappears.
+        self.monitor_thread = threading.Thread(target=self._monitor_with_restart, daemon=True, name="DAMX-KeyboardMonitor")
         self.monitor_thread.start()
         self.log.info("KeyboardMonitor thread started successfully.")
         return True
