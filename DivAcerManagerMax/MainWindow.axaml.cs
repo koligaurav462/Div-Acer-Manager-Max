@@ -767,24 +767,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.IsChecked = false;
     }
 
-    private void CpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void CpuFanSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-        {
-            _cpuFanSpeed = Convert.ToInt32(e.NewValue);
-            if (_cpuFanTextBlock != null)
-                _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
-        }
+        _cpuFanSpeed = Convert.ToInt32(e.NewValue);
+        if (_cpuFanTextBlock != null)
+            _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
     }
 
-    private void GpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void GpuFanSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-        {
-            _gpuFanSpeed = Convert.ToInt32(e.NewValue);
-            if (_gpuFanTextBlock != null)
-                _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
-        }
+        _gpuFanSpeed = Convert.ToInt32(e.NewValue);
+        if (_gpuFanTextBlock != null)
+            _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
     }
 
     private async void SetManualSpeedButton_OnClick(object sender, RoutedEventArgs e)
