@@ -68,7 +68,7 @@ if os.geteuid() != 0:
 
 # Configure logging
 log = logging.getLogger("DAMXDaemon")
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Console handler
@@ -1572,7 +1572,7 @@ class DAMXDaemon:
         if 'General' in config and 'LogLevel' in config['General']:
             log_level = config['General']['LogLevel'].upper()
             if log_level in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                log.setLevel(logging.DEBUG)
+                log.setLevel(getattr(logging, log_level, logging.INFO))
                 log.info(f"Log level set to {log_level}")
 
         return config
