@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
@@ -224,10 +225,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         // Fan control handlers
         if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.Click += ManualFanControlRadioBox_Click;
-        if (_cpuFanSlider != null) _cpuFanSlider.PropertyChanged += CpuFanSlider_ValueChanged;
-        if (_gpuFanSlider != null) _gpuFanSlider.PropertyChanged += GpuFanSlider_ValueChanged;
+        if (_cpuFanSlider != null) _cpuFanSlider.ValueChanged += CpuFanSlider_ValueChanged;
+        if (_gpuFanSlider != null) _gpuFanSlider.ValueChanged += GpuFanSlider_ValueChanged;
         if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.Click += AutoFanSpeedRadioButtonClick;
-        if (_setManualSpeedButton != null) _setManualSpeedButton.Click += SetManualSpeedButton_OnClick;
+        // Note: SetManualSpeedButton_OnClick is already wired via Click="..." in MainWindow.axaml;
+        // this second subscription was redundant (harmless due to the _isSettingFanSpeed guard, but removed for clarity).
 
         // Battery calibration handlers
         if (_startCalibrationButton != null) _startCalibrationButton.Click += StartCalibrationButton_Click;
@@ -236,11 +238,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 
         // Keyboard lighting handlers
-        if (_keyBrightnessSlider != null) _keyBrightnessSlider.PropertyChanged += KeyboardBrightnessSlider_ValueChanged;
+        if (_keyBrightnessSlider != null) _keyBrightnessSlider.ValueChanged += KeyboardBrightnessSlider_ValueChanged;
         if (_applyKeyboardColorsButton != null) _applyKeyboardColorsButton.Click += ApplyKeyboardColorsButton_Click;
 
         // Lighting effects handlers
-        if (_lightingSpeedSlider != null) _lightingSpeedSlider.PropertyChanged += LightingSpeedSlider_ValueChanged;
+        if (_lightingSpeedSlider != null) _lightingSpeedSlider.ValueChanged += LightingSpeedSlider_ValueChanged;
         if (_lightingEffectsApplyButton != null) _lightingEffectsApplyButton.Click += LightingEffectsApplyButton_Click;
 
         // System settings handlers
@@ -765,24 +767,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.IsChecked = false;
     }
 
-    private void CpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void CpuFanSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-        {
-            _cpuFanSpeed = Convert.ToInt32(e.NewValue);
-            if (_cpuFanTextBlock != null)
-                _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
-        }
+        _cpuFanSpeed = Convert.ToInt32(e.NewValue);
+        if (_cpuFanTextBlock != null)
+            _cpuFanTextBlock.Text = _cpuFanSpeed == 0 ? "Auto" : $"{_cpuFanSpeed}%";
     }
 
-    private void GpuFanSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void GpuFanSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-        {
-            _gpuFanSpeed = Convert.ToInt32(e.NewValue);
-            if (_gpuFanTextBlock != null)
-                _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
-        }
+        _gpuFanSpeed = Convert.ToInt32(e.NewValue);
+        if (_gpuFanTextBlock != null)
+            _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
     }
 
     private async void SetManualSpeedButton_OnClick(object sender, RoutedEventArgs e)
@@ -878,10 +874,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             await _client.SetBatteryLimiterAsync(checkBox.IsChecked ?? false);
     }
 
-    private void KeyboardBrightnessSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void KeyboardBrightnessSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-            SetKeyboardBrightness(Convert.ToInt32(e.NewValue), false);
+        SetKeyboardBrightness(Convert.ToInt32(e.NewValue), false);
     }
 
     private async void ApplyKeyboardColorsButton_Click(object sender, RoutedEventArgs e)
@@ -900,10 +895,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void LightingSpeedSlider_ValueChanged(object sender, AvaloniaPropertyChangedEventArgs e)
+    private void LightingSpeedSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        if (e.Property == Slider.ValueProperty)
-            SetLightingSpeed(Convert.ToInt32(e.NewValue), false);
+        SetLightingSpeed(Convert.ToInt32(e.NewValue), false);
     }
 
     private async void LightingEffectsApplyButton_Click(object sender, RoutedEventArgs e)
