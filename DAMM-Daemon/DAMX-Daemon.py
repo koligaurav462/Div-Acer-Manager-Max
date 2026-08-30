@@ -1145,7 +1145,11 @@ class DaemonServer:
 
     def process_command(self, command: str, params: Dict) -> Dict:
         """Process a command from the client"""
-        log.info(f"Processing command: {command} with params: {params}")
+        # Demote 1-second GUI polling to DEBUG level so INFO stays clean
+        if command != "get_all_settings":
+            log.info(f"Processing command: {command} with params: {params}")
+        else:
+            log.debug(f"Processing command: {command} with params: {params}")
 
         try:
             if command == "get_all_settings":
@@ -1595,6 +1599,7 @@ class DAMXDaemon:
 
             # Initialize power monitor (started in run())
             self.power_monitor = PowerSourceDetector(self.manager)
+            self.manager.power_monitor = self.power_monitor
 
             # Log detected features
             features_str = ", ".join(sorted(self.manager.available_features))
