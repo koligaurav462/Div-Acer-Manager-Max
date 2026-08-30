@@ -37,6 +37,8 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
     - name: Checkout main repository
@@ -61,7 +63,7 @@ jobs:
           git clone https://github.com/0x7375646F/Linuwu-Sense.git drivers-temp
         else
           echo "Downloading Div-Linuwu-Sense drivers..."
-          git clone https://github.com/PXDiv/Div-Linuwu-Sense.git drivers-temp
+          git clone https://github.com/koligaurav462/Div-Linuwu-Sense.git drivers-temp
         fi
         
         echo "✓ Drivers repository cloned successfully"
@@ -291,7 +293,7 @@ jobs:
         files: |
           ${{ env.package_dir }}.tar.xz
           ${{ env.package_dir }}.tar.xz.sha256
-        token: ${{ secrets.GH_PAT_RELEASE }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         
     - name: Build Summary
       run: |
