@@ -810,11 +810,11 @@ class DAMXManager:
             log.error(f"Invalid fan speeds. Values must be between 0 and 100: cpu={cpu}, gpu={gpu}")
             return False
 
+        # Pad values to 3 digits (e.g., 000,000) to bypass the C driver's string truncation bug on short inputs
         return self._write_file(
             os.path.join(self.base_path, "fan_speed"),
-            f"{cpu},{gpu}"
+            f"{cpu:03d},{gpu:03d}"
         )
-
 
     def get_lcd_override(self) -> str:
         """Get LCD override status"""
