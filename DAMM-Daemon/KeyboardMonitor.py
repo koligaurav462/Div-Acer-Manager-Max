@@ -171,30 +171,34 @@ class KeyboardMonitor:
             if not on_ac:
                 # Battery rotation: low-power <-> balanced
                 if current == "low-power":
-                    next_info = ("balanced", 0, 0, "Dengeli Mod", "battery-charging")
+                    next_info = ("balanced", 0, 0, "Balanced Mode", "battery-charging")
                 else:
-                    next_info = ("low-power", 0, 0, "ECO Modu (Pil Tasarrufu)", "battery-low")
+                    next_info = ("low-power", 0, 0, "ECO Mode", "battery-low")
             else:
                 # AC rotation: quiet -> balanced -> balanced-performance -> performance -> quiet
                 rotations = {
-                    "quiet": ("balanced", 0, 0, "Dengeli Mod", "system-run"),
-                    "balanced": ("balanced-performance", 75, 75, "Performans Modu", "speedometer"),
-                    "balanced-performance": ("performance", 100, 100, "Turbo Modu", "dialog-warning"),
-                    "performance": ("quiet", 0, 0, "Sessiz Mod", "audio-volume-muted"),
+                    "quiet": ("balanced", 0, 0, "Balanced Mode", "system-run"),
+                    "balanced": ("balanced-performance", 75, 75, "Performance Mode", "speedometer"),
+                    "balanced-performance": ("performance", 100, 100, "Turbo Mode", "dialog-warning"),
+                    "performance": ("quiet", 0, 0, "Quiet Mode", "audio-volume-muted"),
                 }
-                next_info = rotations.get(current, ("balanced", 0, 0, "Dengeli Mod", "system-run"))
+                next_info = rotations.get(current, ("balanced", 0, 0, "Balanced Mode", "system-run"))
 
             target_profile, fan_cpu, fan_gpu, title, icon = next_info
             self.log.info(f"Cycling Thermal Profile: '{current}' -> '{target_profile}' (Fans: {fan_cpu}%)")
 
-            # Apply profile
+            # Apply profile to hardware
             self.manager.set_thermal_profile(target_profile)
             if hasattr(self.manager, 'set_fan_speed'):
                 self.manager.set_fan_speed(fan_cpu, fan_gpu)
 
-            # Send desktop notification
-            self.send_desktop_notification(f"Termal Mod: {title}", f"Fanlar: %{fan_cpu if fan_cpu > 0 else 'Otomatik'}", icon)
+            # Persist the change so hotkey switches survive AC/DC plug events
+            if hasattr(self.manager, 'power_monitor') and self.manager.power_monitor:
+                self.manager.power_monitor.on_user_profile_change(target_profile)
 
+            # Send desktop notification
+            fan_label = f"{fan_cpu}%" if fan_cpu > 0 else "Auto"
+            self.send_desktop_notification(f"Thermal Mode: {title}", f"Fans: {fan_label}", icon)
     def toggle_touchpad(self):
         """Toggle touchpad state."""
         target_user = self.find_target_user()
