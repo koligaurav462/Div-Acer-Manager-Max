@@ -117,15 +117,23 @@ class KeyboardMonitor:
 
         env = self.get_user_session_env(target_user)
         self.log.info(f"Launching DAMX GUI for user '{target_user}'...")
-
-        # Check if already running
         try:
-            pgrep_res = subprocess.run(['pgrep', '-f', 'DivAcerManagerMax'], capture_output=True, text=True)
+            pgrep_res = subprocess.run(
+                ['pgrep', '-x', '-u', target_user, 'DivAcerManagerMax'], 
+                capture_output=True, text=True
+            )
             if pgrep_res.returncode == 0:
-                self.log.info("DivAcerManagerMax is already running in background.")
-                return
-        except Exception:
-            pass
+                for pid in pgrep_res.stdout.strip().splitlines():
+                    try:
+                        with open(f"/proc/{pid}/stat", "r") as f:
+                            stat_data = f.read().split()
+                            if len(stat_data) > 2 and stat_data[2] != 'Z':
+                                self.log.info(f"DAMX GUI is already active (PID {pid}). Suppressing duplicate launch.")
+                                return
+                    except OSError:
+                        continue
+        except Exception as e:
+            self.log.warning(f"Process check failed ({e}), attempting launch anyway.")
 
         cmd = [
             'systemd-run',
@@ -144,7 +152,7 @@ class KeyboardMonitor:
             self.log.info("DAMX GUI process spawned successfully.")
         except Exception as e:
             self.log.error(f"Failed to launch DAMX GUI: {e}")
-
+            
     def is_on_ac(self):
         """Check if laptop is connected to AC charger."""
         for path in glob.glob("/sys/class/power_supply/*/online"):
