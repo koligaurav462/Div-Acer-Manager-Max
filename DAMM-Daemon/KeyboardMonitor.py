@@ -188,17 +188,27 @@ class KeyboardMonitor:
             self.log.info(f"Cycling Thermal Profile: '{current}' -> '{target_profile}' (Fans: {fan_cpu}%)")
 
             # Apply profile to hardware
-            self.manager.set_thermal_profile(target_profile)
+            profile_ok = self.manager.set_thermal_profile(target_profile)
+            if not profile_ok:
+                self.log.error(f"Failed to set thermal profile '{target_profile}'")
+
+            fan_ok = True
             if hasattr(self.manager, 'set_fan_speed'):
-                self.manager.set_fan_speed(fan_cpu, fan_gpu)
+                fan_ok = self.manager.set_fan_speed(fan_cpu, fan_gpu)
+                if not fan_ok:
+                    self.log.warning(f"Failed to set fan speeds (cpu={fan_cpu}%, gpu={fan_gpu}%) for profile '{target_profile}'")
 
             # Persist the change so hotkey switches survive AC/DC plug events
             if hasattr(self.manager, 'power_monitor') and self.manager.power_monitor:
                 self.manager.power_monitor.on_user_profile_change(target_profile)
 
-            # Send desktop notification
-            fan_label = f"{fan_cpu}%" if fan_cpu > 0 else "Auto"
-            self.send_desktop_notification(f"Thermal Mode: {title}", f"Fans: {fan_label}", icon)
+            # Send desktop notification only on full success
+            if profile_ok and fan_ok:
+                fan_label = f"{fan_cpu}%" if fan_cpu > 0 else "Auto"
+                self.send_desktop_notification(f"Thermal Mode: {title}", f"Fans: {fan_label}", icon)
+            else:
+                self.send_desktop_notification("Thermal Error", f"Failed to switch to {title}", "dialog-error")
+                
     def toggle_touchpad(self):
         """Toggle touchpad state."""
         target_user = self.find_target_user()
@@ -296,7 +306,36 @@ class KeyboardMonitor:
 
         try:
             while self.running:
-                rlist, _, _ = select.select(list(file_descriptors.keys()), [], [], 0.5)
+                if not file_descriptors:
+                    self.log.error("All monitored input devices are gone; will rescan in 5s")
+                    time.sleep(5)
+                    return
+
+                try:
+                    rlist, _, _ = select.select(list(file_descriptors.keys()), [], [], 0.5)
+                except (OSError, ValueError) as e:
+                    self.log.warning(f"select() failed ({e}); probing descriptors individually to isolate invalid node...")
+                    dead_fds = []
+                    for test_fd in list(file_descriptors.keys()):
+                        try:
+                            select.select([test_fd], [], [], 0)
+                        except (OSError, ValueError):
+                            dead_fds.append(test_fd)
+
+                    if dead_fds:
+                        for bad_fd in dead_fds:
+                            dead_path = file_descriptors.pop(bad_fd, "<unknown>")
+                            self.log.warning(f"Isolated and removed dead device: {dead_path} (fd {bad_fd})")
+                            try:
+                                os.close(bad_fd)
+                            except Exception:
+                                pass
+                    else:
+                        self.log.warning("Could not isolate bad fd; resetting device list for full rescan")
+                        return
+
+                    continue
+
                 for fd in rlist:
                     try:
                         data = os.read(fd, EVENT_SIZE * 8)
@@ -328,10 +367,8 @@ class KeyboardMonitor:
 
                     except BlockingIOError:
                         continue
-                    except OSError as e:
+                    except (OSError, ValueError) as e:
                         # Device node disappeared (unplug, suspend/resume renumbering).
-                        # Must retire this fd or select() flags it "ready" again on
-                        # every pass, spinning the loop - this is the Errno 19 flood.
                         dead_path = file_descriptors.get(fd, "<unknown>")
                         self.log.warning(f"Device {dead_path} disappeared ({e}); removing from monitor")
                         try:
