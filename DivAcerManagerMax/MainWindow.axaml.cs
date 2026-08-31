@@ -43,65 +43,64 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Path.Combine(AppDataFolderPath, KeyboardLightingEffectPresetFileName);
 
     // UI Controls (will be bound via NameScope)
-    private Button _applyKeyboardColorsButton;
-    private RadioButton _autoFanSpeedRadioButton;
-    private CheckBox _backlightTimeoutCheckBox;
-    private RadioButton _balancedProfileButton;
-    private CheckBox _batteryLimitCheckBox;
-    private CheckBox _bootAnimAndSoundCheckBox;
-    private TextBlock _calibrationStatusTextBlock;
-    public DAMXClient _client;
-    private Slider _cpuFanSlider;
+    private Button? _applyKeyboardColorsButton;
+    private RadioButton? _autoFanSpeedRadioButton;
+    private CheckBox? _backlightTimeoutCheckBox;
+    private RadioButton? _balancedProfileButton;
+    private CheckBox? _batteryLimitCheckBox;
+    private CheckBox? _bootAnimAndSoundCheckBox;
+    private TextBlock? _calibrationStatusTextBlock;
+    public DAMXClient _client = new();
+    private Slider? _cpuFanSlider;
     private int _cpuFanSpeed = 50;
-    private TextBlock _cpuFanTextBlock;
-    private Grid _daemonErrorGrid;
-    private TextBlock _daemonVersionText;
-    private TextBlock _driverVersionText;
-    private Slider _gpuFanSlider;
+    private TextBlock? _cpuFanTextBlock;
+    private Grid? _daemonErrorGrid;
+    private TextBlock? _daemonVersionText;
+    private TextBlock? _driverVersionText;
+    private Slider? _gpuFanSlider;
     private int _gpuFanSpeed = 70;
-    private TextBlock _gpuFanTextBlock;
-    private TextBlock _guiVersionTextBlock;
+    private TextBlock? _gpuFanTextBlock;
+    private TextBlock? _guiVersionTextBlock;
     private bool _isCalibrating;
     private bool _isConnected;
     private bool _isManualFanControl;
     private bool _isSettingFanSpeed;
     private int _keyboardBrightness = 100;
-    private Slider _keyBrightnessSlider;
-    private TextBlock _keyBrightnessText;
-    private TextBlock _laptopTypeText;
-    private CheckBox _lcdOverrideCheckBox;
-    private RadioButton _leftToRightRadioButton;
-    private ColorPicker _lightEffectColorPicker;
-    private Button _lightingEffectsApplyButton;
-    private ComboBox _lightingModeComboBox;
+    private Slider? _keyBrightnessSlider;
+    private TextBlock? _keyBrightnessText;
+    private TextBlock? _laptopTypeText;
+    private CheckBox? _lcdOverrideCheckBox;
+    private RadioButton? _leftToRightRadioButton;
+    private ColorPicker? _lightEffectColorPicker;
+    private Button? _lightingEffectsApplyButton;
+    private ComboBox? _lightingModeComboBox;
     private int _lightingSpeed = 5;
-    private Slider _lightingSpeedSlider;
-    private TextBlock _lightSpeedTextBlock;
-    private RadioButton _lowPowerProfileButton;
-    private RadioButton _manualFanSpeedRadioButton;
-    private RadioButton _maxFanSpeedRadioButton;
-    private TextBlock _modelNameText;
-    private RadioButton _performanceProfileButton;
-    private PowerSourceDetection _powerDetection;
-    private ToggleSwitch _powerToggleSwitch;
-    private RadioButton _quietProfileButton;
-    private RadioButton _rightToLeftRadioButton;
-    private Button _setManualSpeedButton;
-    public DAMXSettings _settings;
-    private Button _startCalibrationButton;
-    private Button _stopCalibrationButton;
-    private TextBlock _supportedFeaturesTextBlock;
-    private TextBlock _thermalProfileInfoText;
-    private RadioButton _turboProfileButton;
-    private ComboBox _usbChargingComboBox;
-    private ColorPicker _zone1ColorPicker;
-    private ColorPicker _zone2ColorPicker;
-    private ColorPicker _zone3ColorPicker;
-    private ColorPicker _zone4ColorPicker;
+    private Slider? _lightingSpeedSlider;
+    private TextBlock? _lightSpeedTextBlock;
+    private RadioButton? _lowPowerProfileButton;
+    private RadioButton? _manualFanSpeedRadioButton;
+    private RadioButton? _maxFanSpeedRadioButton;
+    private TextBlock? _modelNameText;
+    private RadioButton? _performanceProfileButton;
+    private PowerSourceDetection? _powerDetection;
+    private ToggleSwitch? _powerToggleSwitch;
+    private RadioButton? _quietProfileButton;
+    private RadioButton? _rightToLeftRadioButton;
+    private Button? _setManualSpeedButton;
+    public DAMXSettings? _settings;
+    private Button? _startCalibrationButton;
+    private Button? _stopCalibrationButton;
+    private TextBlock? _supportedFeaturesTextBlock;
+    private TextBlock? _thermalProfileInfoText;
+    private RadioButton? _turboProfileButton;
+    private ComboBox? _usbChargingComboBox;
+    private ColorPicker? _zone1ColorPicker;
+    private ColorPicker? _zone2ColorPicker;
+    private ColorPicker? _zone3ColorPicker;
+    private ColorPicker? _zone4ColorPicker;
     private DispatcherTimer? _syncTimer;
     private bool _isPolling = false;
     private bool _isInitialized = false;
-    private bool _isUpdatingUI = false;
 
     public MainWindow()
     {
@@ -781,7 +780,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _gpuFanTextBlock.Text = _gpuFanSpeed == 0 ? "Auto" : $"{_gpuFanSpeed}%";
     }
 
-    private async void SetManualSpeedButton_OnClick(object sender, RoutedEventArgs e)
+    private async void SetManualSpeedButton_OnClick(object? sender, RoutedEventArgs e)
     {
         if (!_isConnected || _isSettingFanSpeed)
             return;
@@ -793,14 +792,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            await _client.SetFanSpeedAsync(_cpuFanSpeed, _gpuFanSpeed);
+            var success = await _client.SetFanSpeedAsync(_cpuFanSpeed, _gpuFanSpeed);
+            if (!success)
+            {
+                await ShowMessageBox("Fan Speed Error", "Daemon failed to apply custom fan speeds.");
+            }
+
+            if (_cpuFanSpeed == 0 && _gpuFanSpeed == 0)
+            {
+                _isManualFanControl = false;
+                if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.IsChecked = false;
+                if (_maxFanSpeedRadioButton != null) _maxFanSpeedRadioButton.IsChecked = false;
+                if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.IsChecked = true;
+            }
+            else
+            {
+                _isManualFanControl = true;
+                if (_manualFanSpeedRadioButton != null) _manualFanSpeedRadioButton.IsChecked = true;
+                if (_autoFanSpeedRadioButton != null) _autoFanSpeedRadioButton.IsChecked = false;
+                if (_maxFanSpeedRadioButton != null) _maxFanSpeedRadioButton.IsChecked = false;
+            }
+
+            await LoadSettingsAsync();
         }
         catch (Exception ex)
         {
-            await ShowMessageBox(
-                "Fan Speed Error",
-                $"Failed to set fan speed: {ex.Message}"
-            );
+            await ShowMessageBox("Fan Speed Error", $"Failed to set fan speed: {ex.Message}");
         }
         finally
         {
@@ -829,7 +846,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try 
         {
-            await _client.SetFanSpeedAsync(0, 0);
+            var success = await _client.SetFanSpeedAsync(0, 0);
+            if (!success)
+            {
+                await ShowMessageBox("Fan Speed Error", "Daemon failed to set Auto fan mode.");
+            }
         }
         catch (Exception ex)
         {
@@ -860,7 +881,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_gpuFanTextBlock != null)
             _gpuFanTextBlock.Text = "100%";
 
-        await _client.SetFanSpeedAsync(100, 100);
+        try
+        {
+            var success = await _client.SetFanSpeedAsync(100, 100);
+            if (!success)
+            {
+                await ShowMessageBox("Fan Speed Error", "Daemon failed to set Max fan mode.");
+            }
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageBox("Fan Speed Error", $"Failed to set Max fan mode: {ex.Message}");
+        }
     }
 
     private async void StartCalibrationButton_Click(object sender, RoutedEventArgs e)
@@ -1276,14 +1308,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     #region INotifyPropertyChanged
 
-    public event PropertyChangedEventHandler PropertyChanged;
+    public event PropertyChangedEventHandler? PropertyChanged;
 
-    protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
+    protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
-    protected bool SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
+    protected bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
