@@ -20,7 +20,7 @@ find_target_user() {
     fi
 
     if command -v loginctl >/dev/null 2>&1; then
-        loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $3 != "gdm" { print $3; exit }'
+        loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $3 != "gdm" && $3 != "sddm" { print $3; exit }'
         return 0
     fi
 
@@ -69,17 +69,25 @@ for _ in $(seq 1 60); do
                 XAUTHORITY="$ENV_XAUTH"
             fi
 
-            if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+            # Break early only if we successfully acquired both a display and xauth
+            if { [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; } && [ -n "$XAUTHORITY" ]; then
                 break 2
             fi
         fi
     done < <(pgrep -u "$TARGET_USER" || true)
+
+    [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ] && break
     sleep 1
 done
 
-# If no XAUTHORITY var was found in environ, fall back to common locations.
-if [ -z "$XAUTHORITY" ]; then
-    for candidate in "/run/user/$USER_ID/gdm/Xauthority" "/home/$TARGET_USER/.Xauthority" /run/user/$USER_ID/.mutter-Xwaylandauth.*; do
+# If no XAUTHORITY var was found in environ, detect KDE/SDDM/Wayland dynamic cookies
+if [ -z "$XAUTHORITY" ] || [ ! -f "$XAUTHORITY" ]; then
+    for candidate in \
+        $(ls -t /run/user/"$USER_ID"/xauth_* 2>/dev/null) \
+        $(ls -t /tmp/xauth_* 2>/dev/null) \
+        "/home/$TARGET_USER/.Xauthority" \
+        "/run/user/$USER_ID/gdm/Xauthority" \
+        /run/user/"$USER_ID"/.mutter-Xwaylandauth.*; do
         if [ -f "$candidate" ]; then
             XAUTHORITY="$candidate"
             break
@@ -104,11 +112,17 @@ echo "Monitoring Nitro/PredatorSense button (code $NITRO_KEY) on $DEVICE for use
 echo "Using DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY XAUTHORITY=$XAUTHORITY"
 
 evtest "$DEVICE" | grep --line-buffered "code $NITRO_KEY.*value 1" | while read -r _line; do
+    # Re-verify Xauthority dynamically in case the session initialized after service start
+    CURRENT_XAUTH="$XAUTHORITY"
+    if [ -z "$CURRENT_XAUTH" ] || [ ! -f "$CURRENT_XAUTH" ]; then
+        CURRENT_XAUTH=$(ls -t /run/user/"$USER_ID"/xauth_* /tmp/xauth_* "/home/$TARGET_USER/.Xauthority" 2>/dev/null | head -n 1)
+    fi
+
     if ! pgrep -f "/opt/damx/gui/DivAcerManagerMax" > /dev/null; then
         sudo -u "$TARGET_USER" \
             DISPLAY="$DISPLAY" \
             WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
-            XAUTHORITY="$XAUTHORITY" \
+            XAUTHORITY="$CURRENT_XAUTH" \
             XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
             DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
             DAMX &
